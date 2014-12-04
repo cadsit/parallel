@@ -1,0 +1,4 @@
+c A 3SAT instance whose satisfying assignment encodes the subset of [0, 1] that add up to 2
+p cnf 1 2
+1 0
+-1 0

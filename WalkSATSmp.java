@@ -1,11 +1,12 @@
 /*
- *    File: WalkSATSeq.java
+ *    File: WalkSATSmp.java
  *    Authors: Connor Adsit
  *             Kevin Bradley
  *             Christian Heinrich
  *    Date: 2014-12-03
  */
 
+import edu.rit.pj2.LongLoop;
 import java.lang.Math;
 import edu.rit.pj2.Task;
 import java.io.FileInputStream;
@@ -16,14 +17,14 @@ import edu.rit.util.Random;
 /**
  * Performs a local stochastic search upon a given boolean equation
  * 
- * Usage: java pj2 WalkSATSeq N nStep seed inputFile.cnf
+ * Usage: java pj2 WalkSATSmp N nStep seed inputFile.cnf
  *        N - number of iterations to perform
  *        nStep - number of steps per iteration
  *        seed - long seed for PRNG
  *        inputFile.cnf - filepath for input, in CNF form
  * 
  * Input file format:
- *    first line: ignored (use for comments)
+      first line: ignored
  *    second line: V C
  *       V - total number of variables
  *       C - total number of clauses
@@ -34,7 +35,7 @@ import edu.rit.util.Random;
  * @author Kevin Bradley
  * @author Christian Heinrich
  */
-public class WalkSATSeq extends edu.rit.pj2.Task {
+public class WalkSATSmp extends edu.rit.pj2.Task {
    int numVars;
    int numClauses;
    Assignment best;
@@ -43,7 +44,6 @@ public class WalkSATSeq extends edu.rit.pj2.Task {
    long maxIter;
    long maxSteps;
    Scanner sc;
-   Random prng;
 
    // debug and probability variables
    //    (probability done by modular arithmatic of random numbers)
@@ -66,7 +66,6 @@ public class WalkSATSeq extends edu.rit.pj2.Task {
             throw new NumberFormatException();
          }
          seed = Long.parseLong(args[2]);
-         prng = new Random(seed);
 
          // read in input and print out representation
          construct(args[3]);
@@ -75,51 +74,63 @@ public class WalkSATSeq extends edu.rit.pj2.Task {
          best = new Assignment ();
 
          // perform maxIter walks
-         for (long l = 0L; l < maxIter; ++l) {
+         parallelFor (1,maxIter) .schedule (dynamic) .exec (new LongLoop() {
+            Random prng;
+            Assignment walkBest;
+            Assignment stepBest;
+            Assignment thrBest;
 
-            // generate initial assignment
-            int[] walkBestAssign = new int[(numVars + 31) / 32];
-            for (int i = 0; i < walkBestAssign.length; ++i) 
-               walkBestAssign[i] = prng.nextInteger();
-            int[] walkBestClauses = new int[(numClauses + 31) / 32];
-            updateClauses (walkBestAssign, walkBestClauses);
-            int walkBestTC = hammingWeightVector (walkBestClauses);
-            int walkBestBC = Integer.MAX_VALUE; 
-            int walkBestMC = 0;
-            Assignment walkBest = new Assignment (walkBestAssign, walkBestClauses, walkBestTC, 
-                                                  walkBestBC, walkBestMC);
-
-            // placeholder for the best of each step
-            Assignment stepBest = (Assignment) walkBest.clone();
- 
-            // perform local search
-            while (numClauses != walkBest.getTrueCount()) {
-               // perform step
-               for (int s = 0; s < maxSteps; ++s) {
-                  int[] newAssign = flip (walkBest.getAssign(), walkBest.getClauses(), walkBest.getTrueCount());
-                  int[] stepClauses = new int[(numClauses + 31)/ 32];
-                  updateClauses(newAssign, stepClauses);
-                  int stepTC = hammingWeightVector (stepClauses);
-                  int stepBC = breakCount (walkBest.getAssign(), stepClauses);
-                  int stepMC = makeCount (walkBest.getAssign(), stepClauses);
-                  Assignment step = new Assignment (newAssign, stepClauses, stepTC, stepBC, stepMC);
-                  stepBest.reduce(step);
-               } 
-
-               // reassign if we have a better assignment
-               if (walkBest.compareTo (stepBest) >= 0) break;
-               else walkBest.reduce (stepBest);
+            public void start () {
+               prng = new Random (seed + rank());
+               thrBest = threadLocal (best);
+               walkBest = new Assignment ();
             }
 
-            // if our best step is better than our current assignment,
-            // propagate the change
-            best.reduce(walkBest);
-         }
+            public void run (long n) {
+               // generate initial assignment
+               int[] walkBestAssign = new int[(numVars + 31) / 32];
+               for (int i = 0; i < walkBestAssign.length; ++i) 
+                  walkBestAssign[i] = prng.nextInteger();
+               int[] walkBestClauses = new int[(numClauses + 31) / 32];
+               updateClauses (walkBestAssign, walkBestClauses);
+               int walkBestTC = hammingWeightVector (walkBestClauses);
+               int walkBestBC = Integer.MAX_VALUE; 
+               int walkBestMC = 0;
+               walkBest = new Assignment (walkBestAssign, walkBestClauses, walkBestTC, 
+                                          walkBestBC, walkBestMC);
+
+               // placeholder for the best of each step
+               Assignment stepBest = (Assignment) walkBest.clone();
+ 
+               // perform local search
+               while (numClauses != walkBest.getTrueCount()) {
+                  // perform step
+                  for (int s = 0; s < maxSteps; ++s) {
+                     int[] newAssign = flip (walkBest.getAssign(), walkBest.getClauses(), walkBest.getTrueCount(), prng);
+                     int[] stepClauses = new int[(numClauses + 31)/ 32];
+                     updateClauses(newAssign, stepClauses);
+                     int stepTC = hammingWeightVector (stepClauses);
+                     int stepBC = breakCount (walkBest.getAssign(), stepClauses);
+                     int stepMC = makeCount (walkBest.getAssign(), stepClauses);
+                     Assignment step = new Assignment (newAssign, stepClauses, stepTC, stepBC, stepMC);
+                     stepBest.reduce(step);
+                  } 
+
+                  // reassign if we have a better assignment
+                  if (walkBest.compareTo (stepBest) >= 0) break;
+                  else walkBest.reduce (stepBest);
+               }
+
+               // if our best step is better than our current assignment,
+               // propagate the change
+               thrBest.reduce(walkBest);
+            }
+         });
 
          // print out results
          if (numClauses != best.getTrueCount()) System.out.println("No solution.");
          else System.out.println ("Solution found: ");
-         System.out.println("\tTruth assignment: " + Integer.toBinaryString(best.getAssign()[0]));
+         System.out.println("\tTruth assignment: "); 
          for (int i = 0; i < numVars; ++i) {
             System.out.printf("\t\t%d -> %s\n", i + 1, lookup(i+1, best.getAssign()));
          }
@@ -196,7 +207,7 @@ public class WalkSATSeq extends edu.rit.pj2.Task {
     *    @param   satClauses  the number of clauses satisfied by the assignment
     *    @return the new truth assignment
     */
-   private int[] flip (int[] assignment, int[] clauses, int satClauses) {
+   private int[] flip (int[] assignment, int[] clauses, int satClauses, Random prng) {
       int[] result = assignment.clone ();
       // find a random unsatisfied clause, pick the c-thclause
       int c = prng.nextInt (numClauses - satClauses) + 1;
